@@ -306,7 +306,7 @@ async function sendMessage(form){
   finally{if(send){send.disabled=false;send.textContent="➤"}}
 }
 function openModal(title,sub,body){
-  $("#modal-root").innerHTML=`<div class="modal-backdrop" data-action="backdrop"><section class="modal"><div class="row between"><h2>${esc(title)}</h2><button class="btn btn-ghost btn-small" data-action="close-modal">Tutup</button></div>${sub?`<p>${esc(sub)}</p>`:""}${body}</section></div>`;
+  $("#modal-root").innerHTML=`<div class="modal-backdrop"><section class="modal"><div class="row between"><h2>${esc(title)}</h2><button class="btn btn-ghost btn-small" data-action="close-modal">Tutup</button></div>${sub?`<p>${esc(sub)}</p>`:""}${body}</section></div>`;
 }
 function closeModal(){$("#modal-root").innerHTML=""}
 function projectModal(){
