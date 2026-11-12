@@ -174,14 +174,12 @@ function chatView(){
     <div class="messages" id="messages">${messagesHTML()}</div>
     ${closedProject?`<div class="composer"><div class="alert">Project Closed — ruang chat bersifat arsip dan tidak menerima pesan baru.</div></div>`:!canSend?`<div class="composer"><div class="alert">Topik ditutup oleh Procurement. Anda masih dapat membaca riwayat diskusi.</div></div>`:
     `<form class="composer" data-form="message">
-      <div class="composer-note">${isProc()?"Pesan dikirim sebagai Procurement dan langsung terlihat oleh seluruh vendor.":"Pesan langsung tayang untuk seluruh peserta dengan alias anonim."} · Maks. 3 lampiran, 2 MB/file.</div>
-      <div id="reply-bar"></div><div class="selected-files" id="selected-files">${state.selectedFiles.map(f=>`<span class="selected-file">${esc(f.name)} · ${fmtSize(f.size)}</span>`).join("")}</div>
+      <div class="composer-note">${isProc()?"Pesan dikirim sebagai Procurement dan langsung terlihat oleh seluruh vendor.":"Pesan langsung tayang untuk seluruh peserta dengan alias anonim."} · Chat teks realtime aktif; lampiran belum diaktifkan.</div>
+      <div id="reply-bar"></div>
       <div class="composer-row">
-        <button type="button" class="attach" data-action="pick-files" title="Lampirkan file">＋</button>
         <textarea name="body" id="message-input" rows="1" maxlength="5000" placeholder="Tulis pertanyaan atau balasan… (Enter untuk kirim, Shift+Enter untuk baris baru)"></textarea>
         <button class="send" aria-label="Kirim pesan">➤</button>
       </div>
-      <input type="file" id="message-files" multiple class="hidden">
     </form>`}
   </section>`;
 }
