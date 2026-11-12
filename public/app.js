@@ -316,7 +316,7 @@ function projectModal(){
       <div class="field"><label>Deskripsi</label><textarea class="input" name="description" required maxlength="2000" rows="3"></textarea></div>
       <div class="field"><label>Kategori</label><select class="input" name="category"><option>Teknologi Informasi</option><option>Jasa Umum</option><option>Konstruksi & Interior</option><option>Kendaraan & Logistik</option><option>Peralatan & Fasilitas</option><option>Lainnya</option></select></div>
       <div class="field"><label>Periode</label><input class="input" name="period" required placeholder="Nov – Des 2026"></div>
-      <div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button class="btn btn-primary">Buat Project</button></div>
+      <div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button type="submit" class="btn btn-primary">Buat Project</button>n></div>
     </form>`);
 }
 function topicModal(){
