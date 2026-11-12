@@ -20,12 +20,6 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
-    {
-      "binding": "FILES",
-      "bucket_name": "vdp-livechat-files"
-    }
-  ],
   "durable_objects": {
     "bindings": [
       {
