@@ -67,7 +67,7 @@ async function passwordHash(password, saltB64) {
     {
       name: "PBKDF2",
       salt: b64ToBytes(saltB64),
-      iterations: 310000,
+      iterations: 100000,
       hash: "SHA-256",
     },
     key,
