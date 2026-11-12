@@ -16,7 +16,7 @@
     {
       "binding": "DB",
       "database_name": "vdp-livechat-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "f9debacd-4218-4f84-8a59-c445391e3749",
       "migrations_dir": "migrations"
     }
   ],
