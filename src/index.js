@@ -284,6 +284,7 @@ async function formatMessages(env, context, user) {
 }
 
 async function handleFileDownload(request, env, user, fileId) {
+  if (!env.FILES) return error("Penyimpanan lampiran belum diaktifkan. Chat teks tetap tersedia.", 503);
   const file = await env.DB.prepare(
     `SELECT f.*, p.status AS project_status
      FROM files f JOIN projects p ON p.id = f.project_id WHERE f.id = ?`
@@ -577,6 +578,7 @@ async function routeApi(request, env) {
     const form = await request.formData();
     const body = String(form.get("body") || "").trim();
     const uploads = form.getAll("files").filter((file) => file && typeof file === "object" && "size" in file && file.size > 0);
+    if (uploads.length && !env.FILES) return error("Upload lampiran sementara dinonaktifkan. Silakan kirim pesan teks.", 503);
     if (!body && !uploads.length) return error("Pesan atau lampiran wajib diisi.");
     if (body.length > MAX_MESSAGE) return error(`Pesan maksimal ${MAX_MESSAGE} karakter.`);
     if (uploads.length > MAX_FILES) return error(`Maksimal ${MAX_FILES} lampiran per pesan.`);
@@ -722,6 +724,7 @@ async function routeApi(request, env) {
 
   const publishMatch = path.match(/^\/api\/files\/([^/]+)\/publish$/);
   if (publishMatch && method === "POST") {
+    if (!env.FILES) return error("Penyimpanan lampiran belum diaktifkan.", 503);
     const user = await requireUser(request, env);
     if (!isProcurement(user)) return error("Hanya Procurement yang dapat mempublikasikan file sanitasi.", 403);
     const originalId = decodeURIComponent(publishMatch[1]);
