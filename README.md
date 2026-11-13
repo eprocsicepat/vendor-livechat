@@ -79,7 +79,7 @@ Nama bucket harus sama dengan `bucket_name` pada `wrangler.jsonc`.
 npx wrangler d1 migrations apply vdp-livechat-db --remote
 ```
 
-Perintah ini menerapkan seluruh migration di folder `migrations/`, termasuk tabel kategori dan Live Chat Procurement pada `0002_change_requests_15_18.sql`.
+Perintah ini menerapkan seluruh migration di folder `migrations/`, termasuk tabel kategori dan Live Chat Procurement pada `0009_change_requests_15_18.sql`.
 
 ### 5. Simpan setup secret
 
@@ -168,7 +168,7 @@ Buka URL lokal yang diberikan Wrangler. Untuk environment lokal, binding D1 dan 
 vdp-livechat/
 ├── migrations/
 │   ├── 0001_init.sql
-│   └── 0002_change_requests_15_18.sql
+│   └── 0009_change_requests_15_18.sql
 ├── public/
 │   ├── _headers
 │   ├── app.js
