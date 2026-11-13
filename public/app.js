@@ -4,7 +4,8 @@ const fmtTime = (ts) => new Intl.DateTimeFormat("id-ID",{day:"2-digit",month:"sh
 const fmtDay = (ts) => new Intl.DateTimeFormat("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Asia/Jakarta"}).format(ts);
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;
 const initials = (name) => String(name || "?").split(/\s+/).slice(0,2).map(x=>x[0]||"").join("").toUpperCase();
-const state = {user:null,needsSetup:false,projects:[],users:[],project:null,topics:[],topic:null,messages:[],page:"projects",socket:null,socketTopic:null,reconnect:null,socketPing:null,wsState:"offline",selectedFiles:[],replyTo:null,search:"",publishFileId:null};
+const state = {user:null,needsSetup:false,projects:[],users:[],categories:[],workspaceTopics:[],supportInbox:[],supportAgents:[],supportSelected:null,supportMessages:[],agentStatus:"offline",project:null,topics:[],topic:null,messages:[],page:"projects",socket:null,socketTopic:null,reconnect:null,socketPing:null,wsState:"offline",selectedFiles:[],replyTo:null,search:"",publishFileId:null};
+const supportState = {open:false,minimized:false,conversation:null,messages:[],history:[],socket:null,socketId:null,ping:null,reconnect:null,viewingHistory:null,adminSocket:null,adminPing:null,adminReconnect:null,adminPoll:null,adminHeartbeat:null,unread:0,loaded:false,loading:false,viewedConversation:null,viewedMessages:[]};
 const isProc = () => !!state.user && ["procurement","admin"].includes(state.user.role);
 
 async function api(path, options={}) {
@@ -45,8 +46,8 @@ function header(){
     </a>
     <nav class="nav">
       <button data-action="home" class="${state.page==="projects"?"active":""}">Project</button>
-      ${isProc()?`<button data-action="home">Workspace</button>`:""}
-      ${state.user?.role==="admin"?`<button data-action="users" class="${state.page==="users"?"active":""}">Pengguna</button>`:""}
+      ${isProc()?`<button data-action="workspace" class="${state.page==="workspace"?"active":""}">Workspace</button><button data-action="livechat" class="${state.page==="livechat"?"active":""}">Live Chat</button>`:""}
+      ${state.user?.role==="admin"?`<button data-action="users" class="${state.page==="users"?"active":""}">Pengguna</button><button data-action="categories" class="${state.page==="categories"?"active":""}">Pengaturan</button>`:""}
     </nav>
     <div class="top-actions">
       ${u?`<div class="user-pill"><span class="avatar ${u.role==="vendor"?"vendor":""}">${esc(initials(u.name))}</span><span><span class="user-name">${esc(u.name)}</span><span class="role-tag">${u.role==="admin"?"Super Admin":u.role==="procurement"?"Procurement":"Vendor"}</span></span></div><button class="btn btn-ghost btn-small" data-action="logout">Keluar</button>`:
@@ -56,13 +57,19 @@ function header(){
 function render(){
   header();
   const app=$("#app");
-  if(state.needsSetup){app.innerHTML=setupView();return}
-  if(state.page==="login"){app.innerHTML=authView("login");return}
-  if(state.page==="register"){app.innerHTML=authView("register");return}
-  if(state.page==="project"&&state.project){app.innerHTML=projectView();return}
-  if(state.page==="chat"&&state.topic){app.innerHTML=chatView();connectSocket(state.topic.id);return}
-  if(state.page==="users"&&state.user?.role==="admin"){app.innerHTML=usersView();return}
-  app.innerHTML=projectsView();
+  if(state.needsSetup) app.innerHTML=setupView();
+  else if(state.page==="login") app.innerHTML=authView("login");
+  else if(state.page==="register") app.innerHTML=authView("register");
+  else if(state.page==="project"&&state.project) app.innerHTML=projectView();
+  else if(state.page==="chat"&&state.topic){app.innerHTML=chatView();connectSocket(state.topic.id);}
+  else if(state.page==="users"&&state.user?.role==="admin") app.innerHTML=usersView();
+  else if(state.page==="categories"&&state.user?.role==="admin") app.innerHTML=categoriesView();
+  else if(state.page==="workspace"&&isProc()) app.innerHTML=workspaceView();
+  else if(state.page==="livechat"&&isProc()) app.innerHTML=liveChatInboxView();
+  else app.innerHTML=projectsView();
+  renderSupportWidget();
+  if(state.page==="livechat"&&isProc()) connectSupportAdmin();
+  else closeSupportAdmin();
 }
 function setupView(){return `<section class="auth-wrap card">
   <div class="eyebrow">First-time setup</div><h1>Aktifkan Procurement Admin</h1>
@@ -118,7 +125,7 @@ function projectsView(){
 }
 function usersView(){
   return `<div class="section-head"><div><div class="eyebrow">Administration</div><h2>Kelola Pengguna</h2><p>Super Admin dapat membuat akun Procurement dan mengelola status akun vendor.</p></div><button class="btn btn-primary" data-action="create-procurement">＋ Tambah Procurement</button></div>
-  ${state.users.length?`<div class="card" style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--soft);text-align:left"><th style="padding:13px">Pengguna</th><th>Role</th><th>Status</th><th>Terdaftar</th><th>Aksi</th></tr></thead><tbody>${state.users.map(u=>`<tr style="border-top:1px solid var(--line)"><td style="padding:13px"><b>${esc(u.name)}</b><div class="soft">@${esc(u.username)}</div></td><td>${u.role==="procurement"?"Procurement":"Vendor"}</td><td><span class="pill ${u.status==="active"?"open":"closed"}">${esc(u.status)}</span></td><td class="soft">${fmtTime(u.created_at)}</td><td>${u.status==="active"?`<button class="btn btn-danger btn-small" data-user-status="${esc(u.id)}" data-status="blocked">Blokir</button>`:`<button class="btn btn-primary btn-small" data-user-status="${esc(u.id)}" data-status="active">Aktifkan</button>`}</td></tr>`).join("")}</tbody></table></div>`:`<div class="card empty"><strong>Belum ada pengguna</strong>Vendor yang registrasi dan Procurement yang dibuat akan muncul di sini.</div>`}
+  ${state.users.length?`<div class="card" style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--soft);text-align:left"><th style="padding:13px">Pengguna</th><th>Role</th><th>Status</th><th>Terdaftar</th><th>Last Login</th><th>Aksi</th></tr></thead><tbody>${state.users.map(u=>`<tr style="border-top:1px solid var(--line)"><td style="padding:13px"><b>${esc(u.name)}</b><div class="soft">@${esc(u.username)}</div></td><td>${u.role==="procurement"?"Procurement":"Vendor"}</td><td><span class="pill ${u.status==="active"?"open":"closed"}">${esc(u.status)}</span></td><td class="soft">${fmtTime(u.created_at)}</td><td class="soft">${u.last_login?fmtTime(u.last_login):"Belum Pernah"}</td><td>${u.status==="active"?`<button class="btn btn-danger btn-small" data-user-status="${esc(u.id)}" data-status="blocked">Blokir</button>`:`<button class="btn btn-primary btn-small" data-user-status="${esc(u.id)}" data-status="active">Aktifkan</button>`}</td></tr>`).join("")}</tbody></table></div>`:`<div class="card empty"><strong>Belum ada pengguna</strong>Vendor yang registrasi dan Procurement yang dibuat akan muncul di sini.</div>`}
   <div class="row" style="margin-top:18px"><button class="btn btn-ghost" data-action="home">← Kembali</button></div>`;
 }
 async function loadUsers(){const data=await api("/api/admin/users");state.users=data.users||[]}
@@ -270,6 +277,424 @@ function connectSocket(topicId){
   };
   ws.onerror=()=>{try{ws.close()}catch{}};
 }
+async function loadCategories() {
+  if (!isProc()) return;
+  const endpoint = state.user.role === "admin" ? "/api/admin/categories" : "/api/categories";
+  const data = await api(endpoint);
+  state.categories = data.categories || [];
+}
+
+async function loadWorkspace() {
+  const data = await api("/api/workspace/topics");
+  state.workspaceTopics = data.topics || [];
+}
+
+function workspaceView() {
+  const rows = state.workspaceTopics.map(t => {
+    const snippet = String(t.last_message || "").replace(/\s+/g, " ").slice(0, 180);
+    return '<article class="card workspace-topic">' +
+      '<div class="workspace-topic-main"><div class="row wrap"><span class="pill ' + (t.project_status === "open" ? "open" : "closed") + '">' + (t.project_status === "open" ? "Project Open" : "Project Closed") + '</span>' +
+      '<span class="soft">' + (t.topic_status === "open" ? "Topik Open" : "Topik Ditutup") + '</span></div>' +
+      '<h3>' + esc(t.topic_title) + '</h3><div class="soft workspace-parent">Project: ' + esc(t.project_name) + '</div>' +
+      '<p class="workspace-snippet">' + esc(snippet) + '</p>' +
+      '<div class="project-meta"><span>' + Number(t.message_count || 0) + ' pesan</span><span>Aktivitas ' + (t.last_activity ? fmtTime(t.last_activity) : "—") + '</span></div></div>' +
+      '<button class="btn btn-primary btn-small" data-workspace-open data-project-id="' + esc(t.project_id) + '" data-topic-id="' + esc(t.topic_id) + '">Open Discussion</button></article>';
+  }).join("");
+  return '<div class="section-head"><div><div class="eyebrow">Workspace Procurement</div><h2>Topik Diskusi Terbaru</h2><p>Topik dengan pesan, diurutkan menurut aktivitas chat terakhir.</p></div><button class="btn btn-ghost" data-action="workspace-refresh">↻ Muat ulang</button></div>' +
+    (rows ? '<div class="workspace-list">' + rows + '</div>' : '<div class="card empty"><strong>Belum ada percakapan</strong>Topik akan muncul setelah pesan pertama dikirim.</div>');
+}
+
+function categoriesView() {
+  const rows = state.categories.map((c, index) =>
+    '<tr><td><b>' + esc(c.name) + '</b></td><td>' + Number(c.usage_count || 0) + '</td><td><span class="pill ' + (c.is_active ? "open" : "closed") + '">' + (c.is_active ? "Aktif" : "Nonaktif") + '</span></td>' +
+    '<td><div class="row"><button class="btn btn-ghost btn-small" data-category-action="move-up" data-id="' + esc(c.id) + '" ' + (index === 0 ? "disabled" : "") + '>↑</button><button class="btn btn-ghost btn-small" data-category-action="move-down" data-id="' + esc(c.id) + '" ' + (index === state.categories.length - 1 ? "disabled" : "") + '>↓</button></div></td>' +
+    '<td><div class="row wrap"><button class="btn btn-ghost btn-small" data-category-action="edit" data-id="' + esc(c.id) + '">Edit</button><button class="btn btn-ghost btn-small" data-category-action="toggle" data-id="' + esc(c.id) + '" data-active="' + (c.is_active ? "1" : "0") + '">' + (c.is_active ? "Nonaktifkan" : "Aktifkan") + '</button><button class="btn btn-danger btn-small" data-category-action="delete" data-id="' + esc(c.id) + '">Hapus</button></div></td></tr>'
+  ).join("");
+  return '<div class="section-head"><div><div class="eyebrow">Super Admin</div><h2>Pengaturan Kategori</h2><p>Kelola kategori project. Kategori yang dipakai project harus dipindahkan ke pengganti sebelum dihapus.</p></div><button class="btn btn-primary" data-category-action="create">＋ Tambah Kategori</button></div>' +
+    (rows ? '<div class="card table-scroll"><table class="admin-table"><thead><tr><th>Kategori</th><th>Project</th><th>Status</th><th>Urutan</th><th>Aksi</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="card empty"><strong>Belum ada kategori</strong>Buat kategori pertama untuk project baru.</div>');
+}
+
+function categoryModal(categoryId = "") {
+  const category = state.categories.find(c => c.id === categoryId);
+  const edit = !!category;
+  const body = '<form data-form="' + (edit ? "update-category" : "create-category") + '">' +
+    (edit ? '<input type="hidden" name="id" value="' + esc(category.id) + '">' : "") +
+    '<div class="field"><label>Nama kategori</label><input class="input" name="name" required minlength="2" maxlength="80" value="' + esc(category?.name || "") + '"></div>' +
+    (edit ? '<label class="category-active-control"><input type="checkbox" name="is_active" ' + (category.is_active ? "checked" : "") + '> Kategori aktif untuk project baru</label>' : "") +
+    '<div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button class="btn btn-primary">' + (edit ? "Simpan" : "Tambah Kategori") + '</button></div></form>';
+  openModal(edit ? "Edit Kategori" : "Tambah Kategori", "Perubahan kategori dicatat pada audit log.", body);
+}
+
+function deleteCategoryModal(categoryId) {
+  const category = state.categories.find(c => c.id === categoryId);
+  if (!category) return;
+  const alternatives = state.categories.filter(c => c.id !== category.id && c.is_active);
+  const replacement = Number(category.usage_count || 0) > 0;
+  const body = '<form data-form="delete-category"><input type="hidden" name="id" value="' + esc(category.id) + '">' +
+    '<p>Hapus kategori <b>' + esc(category.name) + '</b>?</p>' +
+    (replacement ? '<div class="field"><label>Kategori pengganti untuk ' + Number(category.usage_count) + ' project</label><select class="input" name="replacementId" required>' + alternatives.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join("") + '</select></div>' : '<p class="soft">Kategori ini belum digunakan oleh project.</p>') +
+    '<div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button class="btn btn-danger">Hapus Kategori</button></div></form>';
+  openModal("Hapus Kategori", replacement ? "Project yang memakai kategori ini akan dipindahkan ke kategori pengganti." : "Kategori akan dihapus.", body);
+}
+
+function durationLabel(milliseconds) {
+  if (milliseconds == null || milliseconds < 0) return "Belum dijawab";
+  const minutes = Math.floor(milliseconds / 60000);
+  if (minutes < 1) return "kurang dari 1 menit";
+  if (minutes < 60) return minutes + " menit";
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return hours + " jam" + (rest ? " " + rest + " menit" : "");
+}
+
+function supportMessagesHTML(messages, procurementView) {
+  if (!messages?.length) return '<div class="support-empty">Belum ada pesan. Sapa Procurement untuk memulai.</div>';
+  return messages.map(m => {
+    const mine = procurementView ? m.sender_role !== "vendor" : m.sender_role === "vendor";
+    const label = procurementView ? (m.sender_role === "vendor" ? m.sender_name : "Procurement") : (m.sender_role === "vendor" ? "Anda" : "Procurement");
+    return '<div class="support-message ' + (mine ? "mine" : "") + '"><div class="support-message-meta"><b>' + esc(label) + '</b><time>' + fmtTime(m.created_at) + '</time></div><div>' + esc(m.body) + '</div></div>';
+  }).join("");
+}
+
+function renderSupportWidget() {
+  const root = $("#support-root");
+  if (!root) return;
+  if (state.user?.role !== "vendor") {
+    root.innerHTML = "";
+    closeVendorSupportSocket();
+    return;
+  }
+  if (!supportState.loaded && !supportState.loading) {
+    supportState.loading = true;
+    loadVendorSupport().finally(() => { supportState.loading = false; });
+    return;
+  }
+  if (!supportState.open) {
+    root.innerHTML = '<button class="support-launcher" data-support-action="open" aria-label="Buka Live Chat Procurement">💬 <span>Live Chat Procurement</span>' +
+      (supportState.unread ? '<b class="support-unread">' + supportState.unread + '</b>' : '') + '</button>';
+    return;
+  }
+  if (supportState.minimized) {
+    root.innerHTML = '<button class="support-launcher minimized" data-support-action="restore">💬 <span>Live Chat Procurement</span>' + (supportState.unread ? '<b class="support-unread">' + supportState.unread + '</b>' : '') + '</button>';
+    return;
+  }
+  const conversation = supportState.viewedConversation || supportState.conversation;
+  const messages = supportState.viewedConversation ? supportState.viewedMessages : supportState.messages;
+  const waiting = conversation?.status === "waiting";
+  const closed = conversation?.status === "closed";
+  const titleStatus = !conversation ? "Mulai percakapan" : waiting ? "Menunggu Procurement" : closed ? "Percakapan selesai" : conversation.assigned_name ? "Terhubung dengan " + conversation.assigned_name : "Procurement online";
+  const history = (supportState.history || []).filter(item => item.id !== supportState.conversation?.id).slice(0, 5);
+  const historyHtml = history.length ? '<details class="support-history"><summary>Riwayat chat (' + history.length + ')</summary>' +
+    history.map(item => '<button data-support-action="history" data-id="' + esc(item.id) + '"><span>' + esc(item.status === "closed" ? "Selesai" : "Percakapan") + '</span><small>' + (item.last_message ? esc(String(item.last_message).slice(0, 72)) : "Belum ada pesan") + '</small></button>').join("") + '</details>' : "";
+  const conversationHtml = conversation
+    ? '<div class="support-messages" id="support-messages">' + supportMessagesHTML(messages, false) + '</div>' +
+      (closed ? '<div class="support-closed-note">Chat ini sudah ditutup.</div><button class="btn btn-primary btn-small support-new-chat" data-support-action="start">Mulai chat baru</button>' :
+       (supportState.viewedConversation ? '<div class="support-closed-note">Riwayat percakapan. Pesan baru tidak dapat dikirim.</div>' :
+        '<form class="support-composer" data-form="support-message"><input name="body" maxlength="5000" autocomplete="off" placeholder="Tulis pesan…" required><button class="btn btn-primary btn-small">Kirim</button></form>'))
+    : '<div class="support-welcome"><b>Butuh bantuan Procurement?</b><p>Kirim pesan langsung. Riwayat chat tersimpan agar bisa dilanjutkan nanti.</p>' + historyHtml + '<button class="btn btn-primary" data-support-action="start">Mulai Live Chat</button></div>';
+  root.innerHTML = '<section class="support-panel" aria-label="Live Chat Procurement"><header class="support-panel-head"><div><b>Live Chat Procurement</b><small>' + esc(titleStatus) + '</small></div>' +
+    (supportState.viewedConversation ? '<button class="btn btn-ghost btn-small" data-support-action="current">Chat aktif</button>' : '') +
+    '<button class="btn btn-ghost btn-small" data-support-action="minimize" aria-label="Minimalkan">−</button><button class="btn btn-ghost btn-small" data-support-action="close" aria-label="Tutup">×</button></header>' +
+    (conversation ? conversationHtml + (historyHtml ? '<div class="support-history-footer">' + historyHtml + '</div>' : '') : conversationHtml) + '</section>';
+  const messageBox = $("#support-messages");
+  if (messageBox) messageBox.scrollTop = messageBox.scrollHeight;
+}
+
+async function loadVendorSupport() {
+  try {
+    const data = await api("/api/live-chat/current");
+    supportState.conversation = data.conversation || null;
+    supportState.messages = data.messages || [];
+    supportState.history = data.history || [];
+    supportState.loaded = true;
+    supportState.viewedConversation = null;
+    supportState.viewedMessages = [];
+    supportState.viewingHistory = null;
+    if (supportState.conversation) connectVendorSupportSocket(supportState.conversation.id);
+    else closeVendorSupportSocket();
+    renderSupportWidget();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function openVendorSupport() {
+  supportState.open = true;
+  supportState.minimized = false;
+  supportState.unread = 0;
+  await loadVendorSupport();
+}
+
+async function startVendorSupport() {
+  try {
+    const data = await api("/api/live-chat/conversations", {method:"POST", body:{}});
+    supportState.conversation = data.conversation;
+    supportState.messages = data.messages || [];
+    supportState.viewedConversation = null;
+    supportState.viewedMessages = [];
+    supportState.history = await api("/api/live-chat/history").then(x => x.conversations || []);
+    connectVendorSupportSocket(data.conversation.id);
+    renderSupportWidget();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function openVendorSupportHistory(conversationId) {
+  try {
+    const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId));
+    supportState.viewedConversation = data.conversation;
+    supportState.viewedMessages = data.messages || [];
+    supportState.viewingHistory = conversationId;
+    if (data.conversation.status !== "closed") connectVendorSupportSocket(conversationId);
+    else if (supportState.conversation?.status === "waiting" || supportState.conversation?.status === "active") connectVendorSupportSocket(supportState.conversation.id);
+    else closeVendorSupportSocket();
+    renderSupportWidget();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function closeVendorSupportSocket() {
+  clearInterval(supportState.ping);
+  clearTimeout(supportState.reconnect);
+  supportState.ping = null;
+  supportState.reconnect = null;
+  if (supportState.socket) {
+    supportState.socket.onclose = null;
+    try { supportState.socket.close(); } catch {}
+  }
+  supportState.socket = null;
+  supportState.socketId = null;
+}
+
+function connectVendorSupportSocket(conversationId) {
+  if (!conversationId || (supportState.socketId === conversationId && supportState.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(supportState.socket.readyState))) return;
+  closeVendorSupportSocket();
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(scheme + "://" + location.host + "/api/live-chat/conversations/" + encodeURIComponent(conversationId) + "/ws");
+  supportState.socket = ws;
+  supportState.socketId = conversationId;
+  ws.onopen = () => {
+    if (supportState.socket !== ws) return;
+    supportState.ping = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send("authping"); }, 30000);
+  };
+  ws.onmessage = async event => {
+    if (event.data === "pong") return;
+    let payload = {};
+    try { payload = JSON.parse(event.data); } catch {}
+    if (payload.type === "support_message" && payload.senderRole === "procurement" && (!supportState.open || supportState.minimized)) {
+      supportState.unread = (supportState.unread || 0) + 1;
+      toast("Pesan baru dari Procurement.");
+    }
+    try {
+      const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId));
+      if (supportState.conversation?.id === conversationId) {
+        supportState.conversation = data.conversation;
+        supportState.messages = data.messages || [];
+      }
+      if (supportState.viewingHistory === conversationId) {
+        supportState.viewedConversation = data.conversation;
+        supportState.viewedMessages = data.messages || [];
+      }
+      supportState.history = await api("/api/live-chat/history").then(x => x.conversations || []);
+      renderSupportWidget();
+    } catch (err) { console.error(err); }
+  };
+  ws.onclose = event => {
+    if (supportState.socket !== ws) return;
+    clearInterval(supportState.ping);
+    supportState.ping = null;
+    if (event.code === 1008) { closeVendorSupportSocket(); return; }
+    supportState.reconnect = setTimeout(() => {
+      if (state.user?.role === "vendor" && (supportState.open || supportState.conversation)) connectVendorSupportSocket(conversationId);
+    }, 2200);
+  };
+  ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
+async function loadSupportInbox() {
+  const data = await api("/api/admin/live-chat/conversations?status=open");
+  const agents = await api("/api/admin/live-chat/agents");
+  state.supportInbox = data.conversations || [];
+  state.supportAgents = agents.agents || [];
+  const current = state.supportAgents.find(a => a.id === state.user?.id);
+  if (current) state.agentStatus = current.status || "offline";
+}
+
+async function loadSupportConversation(conversationId) {
+  const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId));
+  state.supportSelected = data.conversation;
+  state.supportMessages = data.messages || [];
+  return data;
+}
+
+function liveChatInboxView() {
+  const rows = state.supportInbox.map(c => {
+    const response = c.first_agent_reply_at ? durationLabel(c.first_agent_reply_at - c.created_at) : "Belum dijawab";
+    return '<button class="support-inbox-row ' + (state.supportSelected?.id === c.id ? "selected" : "") + '" data-support-admin="open" data-id="' + esc(c.id) + '">' +
+      '<div class="row between"><b>' + esc(c.vendor_name) + '</b><span class="pill ' + (c.status === "waiting" ? "closed" : "open") + '">' + (c.status === "waiting" ? "Menunggu" : "Aktif") + '</span></div>' +
+      '<small>@' + esc(c.vendor_username) + ' · ' + (c.assigned_name ? "Agen: " + esc(c.assigned_name) : "Belum ada agen") + '</small>' +
+      '<p>' + esc(String(c.last_message || "Belum ada pesan").slice(0, 110)) + '</p>' +
+      '<div class="support-inbox-meta"><span>' + Number(c.message_count || 0) + ' pesan</span><span>Respons: ' + esc(response) + '</span><span>' + fmtTime(c.last_message_at || c.created_at) + '</span></div></button>';
+  }).join("");
+  const agentOptions = state.supportAgents.filter(a => ["online", "busy"].includes(a.status)).map(a => '<option value="' + esc(a.id) + '">' + esc(a.name) + ' · ' + (a.status === "online" ? "Online" : "Busy") + '</option>').join("");
+  const detail = state.supportSelected ? supportConversationView() : '<div class="card empty support-detail-empty"><strong>Pilih percakapan</strong>Chat yang dipilih akan menampilkan riwayat, identitas vendor, dan kontrol penanganan.</div>';
+  return '<div class="section-head"><div><div class="eyebrow">Procurement Support</div><h2>Live Chat Procurement</h2><p>Antrean, percakapan aktif, agen, dan waktu respons.</p></div><div class="row wrap"><label class="support-status-label">Status agen<select id="support-agent-status" class="input select"><option value="online" ' + (state.agentStatus === "online" ? "selected" : "") + '>Online</option><option value="busy" ' + (state.agentStatus === "busy" ? "selected" : "") + '>Busy</option><option value="offline" ' + (state.agentStatus === "offline" ? "selected" : "") + '>Offline</option></select></label><button class="btn btn-ghost" data-support-admin="refresh">↻ Muat ulang</button></div></div>' +
+    '<div class="support-agent-strip">' + state.supportAgents.map(a => '<span class="support-agent-chip ' + esc(a.status) + '"><i></i>' + esc(a.name) + ' · ' + esc(a.status) + ' · ' + Number(a.active_count || 0) + ' aktif</span>').join("") + '</div>' +
+    '<div class="support-admin-layout"><div class="support-inbox">' + (rows || '<div class="card empty"><strong>Belum ada chat masuk</strong>Pesan baru dari Vendor akan muncul di sini.</div>') + '</div><div class="support-detail">' + detail + '</div></div>';
+}
+
+function supportConversationView() {
+  const c = state.supportSelected;
+  const isMine = c?.assigned_to === state.user?.id;
+  const canManage = state.user?.role === "admin" || isMine || !c?.assigned_to;
+  const options = state.supportAgents.filter(a => ["online", "busy"].includes(a.status)).map(a => '<option value="' + esc(a.id) + '" ' + (a.id === c?.assigned_to ? "selected" : "") + '>' + esc(a.name) + ' · ' + esc(a.status) + '</option>').join("");
+  const response = c?.first_agent_reply_at ? durationLabel(c.first_agent_reply_at - c.created_at) : "Belum ada balasan Procurement";
+  const controls = c?.status === "closed" ? '<div class="alert">Percakapan ditutup pada ' + (c.closed_at ? fmtTime(c.closed_at) : "—") + '.</div>' :
+    '<div class="support-agent-controls">' +
+    (!c.assigned_to || c.status === "waiting" ? '<button class="btn btn-primary btn-small" data-support-admin="claim" data-id="' + esc(c.id) + '">Ambil Chat</button>' : '') +
+    (canManage ? '<select id="support-transfer-target" class="input select">' + options + '</select><button class="btn btn-ghost btn-small" data-support-admin="transfer" data-id="' + esc(c.id) + '">Transfer</button>' : '<span class="soft">Ditangani agen lain</span>') +
+    (canManage ? '<button class="btn btn-danger btn-small" data-support-admin="close" data-id="' + esc(c.id) + '">Tutup Percakapan</button>' : '') + '</div>';
+  const composer = c?.status === "closed" || !canManage || (c.assigned_to && !isMine && state.user?.role !== "admin")
+    ? '<div class="alert">Percakapan hanya dapat dibalas oleh agen yang menangani.</div>'
+    : '<form class="support-admin-composer" data-form="admin-support-message"><textarea name="body" rows="2" maxlength="5000" placeholder="Balas ke Vendor…" required></textarea><button class="btn btn-primary">Kirim Balasan</button></form>';
+  return '<section class="card support-detail-card"><header class="support-detail-head"><div><div class="eyebrow">Identitas Vendor</div><h3>' + esc(c.vendor_name) + '</h3><small>@' + esc(c.vendor_username) + '</small></div><span class="pill ' + (c.status === "waiting" ? "closed" : c.status === "closed" ? "closed" : "open") + '">' + esc(c.status) + '</span></header>' +
+    '<div class="support-response-row"><span>Mulai ' + fmtTime(c.created_at) + '</span><span>Waktu respons pertama: ' + esc(response) + '</span><span>Agen: ' + esc(c.assigned_name || "Belum ditetapkan") + '</span></div>' +
+    controls + '<div class="support-admin-messages">' + supportMessagesHTML(state.supportMessages, true) + '</div>' + composer + '</section>';
+}
+
+async function connectSupportAdmin() {
+  if (!isProc() || state.page !== "livechat") return;
+  if (!supportState.adminPoll) supportState.adminPoll = setInterval(() => {
+    if (state.page === "livechat") loadSupportInbox().then(() => {
+      if (state.supportSelected) return loadSupportConversation(state.supportSelected.id);
+    }).then(() => render()).catch(err => console.error(err));
+  }, 12000);
+  if (!supportState.adminHeartbeat) supportState.adminHeartbeat = setInterval(() => {
+    if (state.page === "livechat" && state.agentStatus !== "offline") {
+      api("/api/admin/live-chat/availability", {method:"PATCH", body:{status:state.agentStatus}}).catch(err => console.error(err));
+    }
+  }, 30000);
+  if (supportState.adminSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(supportState.adminSocket.readyState)) return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(scheme + "://" + location.host + "/api/admin/live-chat/ws");
+  supportState.adminSocket = ws;
+  ws.onopen = () => {
+    if (supportState.adminSocket !== ws) return;
+    supportState.adminPing = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send("authping"); }, 30000);
+  };
+  ws.onmessage = async event => {
+    if (event.data === "pong") return;
+    try {
+      const payload = JSON.parse(event.data);
+      const had = state.supportInbox.some(c => c.id === payload.conversationId);
+      await loadSupportInbox();
+      if (state.supportSelected) await loadSupportConversation(state.supportSelected.id);
+      if (payload.conversationId && !had) toast("Chat baru masuk dari Vendor.");
+      render();
+    } catch (err) { console.error(err); }
+  };
+  ws.onclose = event => {
+    if (supportState.adminSocket !== ws) return;
+    clearInterval(supportState.adminPing);
+    supportState.adminPing = null;
+    if (event.code === 1008) { closeSupportAdmin(); return; }
+    supportState.adminReconnect = setTimeout(() => {
+      if (state.page === "livechat" && isProc()) connectSupportAdmin();
+    }, 2500);
+  };
+  ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
+function closeSupportAdmin() {
+  clearInterval(supportState.adminPoll);
+  clearInterval(supportState.adminHeartbeat);
+  clearInterval(supportState.adminPing);
+  clearTimeout(supportState.adminReconnect);
+  supportState.adminPoll = null;
+  supportState.adminHeartbeat = null;
+  supportState.adminPing = null;
+  supportState.adminReconnect = null;
+  if (supportState.adminSocket) {
+    supportState.adminSocket.onclose = null;
+    try { supportState.adminSocket.close(); } catch {}
+  }
+  supportState.adminSocket = null;
+}
+
+async function openSupportAdminConversation(conversationId) {
+  try {
+    await loadSupportConversation(conversationId);
+    render();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function claimSupportConversation(conversationId) {
+  try {
+    await api("/api/admin/live-chat/conversations/" + encodeURIComponent(conversationId) + "/claim", {method:"POST", body:{}});
+    await loadSupportInbox();
+    await loadSupportConversation(conversationId);
+    render();
+    toast("Chat diambil.");
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function transferSupportConversation(conversationId) {
+  const agentId = $("#support-transfer-target")?.value;
+  if (!agentId) { toast("Pilih agen tujuan.", "error"); return; }
+  try {
+    await api("/api/admin/live-chat/conversations/" + encodeURIComponent(conversationId) + "/assign", {method:"POST", body:{agentId}});
+    await loadSupportInbox();
+    await loadSupportConversation(conversationId);
+    render();
+    toast("Chat berhasil ditransfer.");
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function closeSupportConversation(conversationId) {
+  try {
+    await api("/api/admin/live-chat/conversations/" + encodeURIComponent(conversationId) + "/close", {method:"POST", body:{}});
+    state.supportSelected = null;
+    state.supportMessages = [];
+    await loadSupportInbox();
+    render();
+    toast("Percakapan ditutup.");
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function updateSupportAgentStatus(status) {
+  try {
+    const data = await api("/api/admin/live-chat/availability", {method:"PATCH", body:{status}});
+    state.agentStatus = data.status;
+    await loadSupportInbox();
+    render();
+    toast("Status agen diperbarui.");
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function sendSupportMessage(form, procurementView = false) {
+  const conversation = procurementView ? state.supportSelected : (supportState.viewedConversation || supportState.conversation);
+  if (!conversation) return;
+  const input = form.elements.namedItem("body");
+  const body = String(input?.value || "").trim();
+  if (!body) return;
+  const button = form.querySelector("button");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/live-chat/conversations/" + encodeURIComponent(conversation.id) + "/messages", {method:"POST", body:{body}});
+    form.reset();
+    if (procurementView) {
+      await loadSupportInbox();
+      await loadSupportConversation(conversation.id);
+      render();
+    } else {
+      await loadVendorSupport();
+    }
+  } catch (err) { toast(err.message, "error"); }
+  finally { if (button) button.disabled = false; }
+}
+
 async function loadProjects(){
   const data=await api("/api/projects");state.projects=data.projects||[];
 }
@@ -314,9 +739,9 @@ function projectModal(){
     <form data-form="create-project">
       <div class="field"><label>Nama project</label><input class="input" name="name" required minlength="5" maxlength="160"></div>
       <div class="field"><label>Deskripsi</label><textarea class="input" name="description" required maxlength="2000" rows="3"></textarea></div>
-      <div class="field"><label>Kategori</label><select class="input" name="category"><option>Teknologi Informasi</option><option>Jasa Umum</option><option>Konstruksi & Interior</option><option>Kendaraan & Logistik</option><option>Peralatan & Fasilitas</option><option>Lainnya</option></select></div>
+      <div class="field"><label>Kategori</label><select class="input" name="category">${state.categories.filter(c=>c.is_active).map(c=>"<option>"+esc(c.name)+"</option>").join("")}</select></div>
       <div class="field"><label>Periode</label><input class="input" name="period" required placeholder="Nov – Des 2026"></div>
-      <div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button type="submit" class="btn btn-primary">Buat Project</button>n></div>
+      <div class="form-actions"><button type="button" class="btn btn-ghost" data-action="close-modal">Batal</button><button type="submit" class="btn btn-primary">Buat Project</button></div>
     </form>`);
 }
 function topicModal(){
@@ -337,11 +762,11 @@ async function handleForm(form){
     if(kind==="setup"){
       await api("/api/setup",{method:"POST",body:values});
       const session=await api("/api/session");state.user=session.user;state.needsSetup=session.needsSetup;
-      await loadProjects();state.page="projects";toast("Super Admin berhasil dibuat.");render();return;
+      await loadProjects();if(isProc())await loadCategories();state.page="projects";toast("Super Admin berhasil dibuat.");render();return;
     }
     if(kind==="login"){
       const data=await api("/api/login",{method:"POST",body:values});state.user=data.user;
-      await loadProjects();state.page="projects";state.search="";setHash("#/projects");toast(`Selamat datang, ${data.user.name}.`);render();return;
+      await loadProjects();if(isProc())await loadCategories();state.page="projects";state.search="";setHash("#/projects");toast(`Selamat datang, ${data.user.name}.`);render();return;
     }
     if(kind==="register"){
       const data=await api("/api/register",{method:"POST",body:values});state.user=data.user;
@@ -356,6 +781,18 @@ async function handleForm(form){
     if(kind==="create-procurement"){
       await api("/api/admin/users",{method:"POST",body:values});closeModal();await loadUsers();render();toast("Akun Procurement berhasil dibuat.");return;
     }
+    if(kind==="create-category"){
+      await api("/api/admin/categories",{method:"POST",body:values});closeModal();await loadCategories();render();toast("Kategori berhasil ditambahkan.");return;
+    }
+    if(kind==="update-category"){
+      const active=form.querySelector("[name=is_active]")?.checked ?? true;
+      await api("/api/admin/categories/"+encodeURIComponent(values.id),{method:"PATCH",body:{name:values.name,is_active:active}});closeModal();await loadCategories();render();toast("Kategori berhasil diperbarui.");return;
+    }
+    if(kind==="delete-category"){
+      await api("/api/admin/categories/"+encodeURIComponent(values.id),{method:"DELETE",body:{replacementId:values.replacementId||""}});closeModal();await loadCategories();render();toast("Kategori berhasil dihapus.");return;
+    }
+    if(kind==="support-message"){await sendSupportMessage(form,false);return}
+    if(kind==="admin-support-message"){await sendSupportMessage(form,true);return}
     if(kind==="message"){await sendMessage(form);return}
   }catch(error){
     if(err){err.innerHTML=`<div class="alert error">${esc(error.message)}</div>`}else toast(error.message,"error");
@@ -371,10 +808,14 @@ document.addEventListener("click",async event=>{
     event.preventDefault();
     try{
       if(action==="home"){await loadProjects();go("projects","#/projects")}
+      if(action==="workspace"){await loadWorkspace();go("workspace","#/workspace")}
+      if(action==="workspace-refresh"){await loadWorkspace();render()}
+      if(action==="livechat"){await loadSupportInbox();state.page="livechat";setHash("#/livechat");render()}
+      if(action==="categories"){await loadCategories();go("categories","#/categories")}
       if(action==="login")go("login","#/login");
       if(action==="register")go("register","#/register");
-      if(action==="logout"){await api("/api/logout",{method:"POST"});state.user=null;state.project=null;state.topic=null;state.page="projects";await loadProjects();setHash("#/projects");closeSocket();toast("Anda telah keluar.");render()}
-      if(action==="create-project")projectModal();
+      if(action==="logout"){await api("/api/logout",{method:"POST"});closeVendorSupportSocket();closeSupportAdmin();supportState.open=false;supportState.loaded=false;supportState.loading=false;supportState.unread=0;supportState.conversation=null;state.user=null;state.project=null;state.topic=null;state.page="projects";await loadProjects();setHash("#/projects");closeSocket();toast("Anda telah keluar.");render()}
+      if(action==="create-project"){await loadCategories();projectModal()}
       if(action==="create-topic")topicModal();
       if(action==="users"){await loadUsers();go("users","#/users")}
       if(action==="create-procurement")procurementModal();
@@ -442,6 +883,80 @@ document.addEventListener("click",async event=>{
   const backdrop=event.target.closest(".modal-backdrop");
   if(backdrop&&event.target===backdrop)closeModal();
 });
+document.addEventListener("click", async event => {
+  const control = event.target.closest("[data-support-action]");
+  if (!control) return;
+  event.preventDefault();
+  const action = control.dataset.supportAction;
+  if (action === "open" || action === "restore") { await openVendorSupport(); return; }
+  if (action === "minimize") { supportState.minimized = true; renderSupportWidget(); return; }
+  if (action === "close") { supportState.open = false; supportState.minimized = false; renderSupportWidget(); return; }
+  if (action === "start") { supportState.open = true; supportState.minimized = false; await startVendorSupport(); return; }
+  if (action === "history") { await openVendorSupportHistory(control.dataset.id); return; }
+  if (action === "current") { supportState.viewedConversation = null; supportState.viewedMessages = []; await loadVendorSupport(); return; }
+});
+
+document.addEventListener("click", async event => {
+  const workspaceButton = event.target.closest("[data-workspace-open]");
+  if (workspaceButton) {
+    event.preventDefault();
+    try {
+      await openProject(workspaceButton.dataset.projectId);
+      await openChat(workspaceButton.dataset.topicId);
+    } catch (err) { toast(err.message, "error"); }
+    return;
+  }
+
+  const supportButton = event.target.closest("[data-support-admin]");
+  if (supportButton) {
+    event.preventDefault();
+    const action = supportButton.dataset.supportAdmin;
+    const id = supportButton.dataset.id;
+    if (action === "open") await openSupportAdminConversation(id);
+    if (action === "refresh") {
+      try {
+        await loadSupportInbox();
+        if (state.supportSelected) await loadSupportConversation(state.supportSelected.id);
+        render();
+      } catch (err) { toast(err.message, "error"); }
+    }
+    if (action === "claim") await claimSupportConversation(id);
+    if (action === "transfer") await transferSupportConversation(id);
+    if (action === "close") await closeSupportConversation(id);
+    return;
+  }
+
+  const categoryButton = event.target.closest("[data-category-action]");
+  if (categoryButton) {
+    event.preventDefault();
+    const action = categoryButton.dataset.categoryAction;
+    const id = categoryButton.dataset.id;
+    try {
+      if (action === "create") categoryModal();
+      if (action === "edit") categoryModal(id);
+      if (action === "delete") deleteCategoryModal(id);
+      if (action === "toggle") {
+        const active = categoryButton.dataset.active === "1";
+        await api("/api/admin/categories/" + encodeURIComponent(id), {method:"PATCH", body:{is_active:!active}});
+        await loadCategories();
+        render();
+        toast("Status kategori diperbarui.");
+      }
+      if (action === "move-up" || action === "move-down") {
+        const ids = state.categories.map(c => c.id);
+        const index = ids.indexOf(id);
+        const next = action === "move-up" ? index - 1 : index + 1;
+        if (index >= 0 && next >= 0 && next < ids.length) {
+          [ids[index], ids[next]] = [ids[next], ids[index]];
+          await api("/api/admin/categories/reorder", {method:"POST", body:{ids}});
+          await loadCategories();
+          render();
+        }
+      }
+    } catch (err) { toast(err.message, "error"); }
+  }
+});
+
 document.addEventListener("input",event=>{
   if(event.target.id==="project-search"){
     state.search=event.target.value;
@@ -450,6 +965,7 @@ document.addEventListener("input",event=>{
   }
 });
 document.addEventListener("change",event=>{
+  if(event.target.id==="support-agent-status"){updateSupportAgentStatus(event.target.value);return}
   if(event.target.id==="message-files"){
     state.selectedFiles=[...event.target.files].slice(0,3);
     if([...event.target.files].length>3)toast("Maksimal 3 file per pesan.","error");
@@ -480,6 +996,9 @@ window.addEventListener("hashchange",async()=>{
       await openProject(decodeURIComponent(parts[1]),false);
       await openChat(decodeURIComponent(parts[2]),false);return;
     }
+    if(parts[0]==="workspace"&&isProc()){await loadWorkspace();go("workspace");return}
+    if(parts[0]==="livechat"&&isProc()){await loadSupportInbox();state.page="livechat";render();return}
+    if(parts[0]==="categories"&&state.user?.role==="admin"){await loadCategories();go("categories");return}
     if(parts[0]==="login"){go("login");return}
     if(parts[0]==="register"){go("register");return}
     if(parts[0]==="users"&&state.user?.role==="admin"){await loadUsers();go("users");return}
@@ -490,8 +1009,12 @@ async function init(){
   try{
     const session=await api("/api/session");state.user=session.user;state.needsSetup=session.needsSetup;
     await loadProjects();
+    if(isProc())await loadCategories();
     const parts=location.hash.replace(/^#\//,"").split("/");
-    if(!state.needsSetup&&parts[0]==="project"&&parts[1])await openProject(decodeURIComponent(parts[1]),false);
+    if(!state.needsSetup&&parts[0]==="workspace"&&isProc()){await loadWorkspace();state.page="workspace"}
+    else if(!state.needsSetup&&parts[0]==="livechat"&&isProc()){await loadSupportInbox();state.page="livechat"}
+    else if(!state.needsSetup&&parts[0]==="categories"&&state.user?.role==="admin")state.page="categories";
+    else if(!state.needsSetup&&parts[0]==="project"&&parts[1])await openProject(decodeURIComponent(parts[1]),false);
     else if(!state.needsSetup&&parts[0]==="chat"&&parts[1]&&parts[2]){
       await openProject(decodeURIComponent(parts[1]),false);await openChat(decodeURIComponent(parts[2]),false);
     }else if(!state.needsSetup&&parts[0]==="login")state.page="login";

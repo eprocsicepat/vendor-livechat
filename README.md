@@ -18,6 +18,10 @@ Aplikasi live chat untuk diskusi pengadaan vendor dan Procurement. Ini adalah bu
 - Lampiran vendor bersifat privat ke Procurement; lampiran Procurement dibagikan ke peserta project.
 - Procurement dapat mengunggah salinan sanitasi untuk dipublikasikan; file asli vendor tetap privat.
 - Akun vendor dapat diblokir oleh Super Admin; sesi dan koneksi WebSocket aktif dicabut.
+- Widget Live Chat Procurement tersedia di kanan bawah khusus Vendor yang login, dengan antrean, agen, riwayat, notifikasi, dan percakapan realtime.
+- Super Admin dapat mengelola kategori project dari menu Pengaturan, termasuk ubah nama, aktif/nonaktif, urutan, dan hapus dengan kategori pengganti bila sedang dipakai.
+- Last Login mencatat login berhasil dan ditampilkan dalam WIB di daftar pengguna.
+- Workspace Procurement berisi topik yang sudah memiliki pesan, diurutkan berdasarkan aktivitas chat terbaru.
 
 ## Arsitektur
 
@@ -75,7 +79,7 @@ Nama bucket harus sama dengan `bucket_name` pada `wrangler.jsonc`.
 npx wrangler d1 migrations apply vdp-livechat-db --remote
 ```
 
-Perintah ini membuat tabel user, session, project, topic, participant, message, file, audit, dan rate-limit.
+Perintah ini menerapkan seluruh migration di folder `migrations/`, termasuk tabel kategori dan Live Chat Procurement pada `0009_change_requests_15_18.sql`.
 
 ### 5. Simpan setup secret
 
@@ -127,8 +131,11 @@ Binding D1, R2, Durable Objects, dan Static Assets sudah didefinisikan di `wrang
 Super Admin kemudian dapat:
 - Membuat akun Procurement dari menu **Pengguna**.
 - Memblokir atau mengaktifkan kembali akun vendor.
+- Mengelola kategori project dari menu **Pengaturan**.
 - Membuat project dan topik.
 - Memoderasi pesan.
+
+Agen Procurement mengatur status ketersediaan dari menu **Live Chat**. Chat Vendor baru otomatis dialokasikan ke agen Online; antrean yang menunggu akan didistribusikan saat agen Online tersedia. Status agen yang tidak lagi mengirim heartbeat akan dianggap Offline.
 
 Vendor mendaftar sendiri dari halaman **Daftar Vendor**.
 
@@ -160,7 +167,8 @@ Buka URL lokal yang diberikan Wrangler. Untuk environment lokal, binding D1 dan 
 ```text
 vdp-livechat/
 ├── migrations/
-│   └── 0001_init.sql
+│   ├── 0001_init.sql
+│   └── 0009_change_requests_15_18.sql
 ├── public/
 │   ├── _headers
 │   ├── app.js
