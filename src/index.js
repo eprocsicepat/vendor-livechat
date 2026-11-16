@@ -246,31 +246,51 @@ async function listTopics(env, projectId) {
   return result.results || [];
 }
 
-async function filesForMessage(env, messageId, user) {
-  const rows = await env.DB.prepare(
-    `SELECT id, name, mime, size, access, owner_id, created_at
-     FROM files WHERE message_id = ? ORDER BY created_at`
-  ).bind(messageId).all();
-  return (rows.results || [])
-    .filter((file) => isProcurement(user) || file.access === "shared" || file.owner_id === user.id)
-    .map(({ owner_id, ...file }) => file);
+async function filesForMessages(env, messageIds, user) {
+  const filesByMessage = new Map();
+  if (!messageIds.length) return filesByMessage;
+
+  // Keep each IN clause comfortably below SQLite/D1 bind-parameter limits.
+  for (let offset = 0; offset < messageIds.length; offset += 90) {
+    const chunk = messageIds.slice(offset, offset + 90);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await env.DB.prepare(
+      `SELECT id, message_id, name, mime, size, access, owner_id, created_at
+       FROM files WHERE message_id IN (${placeholders}) ORDER BY created_at`
+    ).bind(...chunk).all();
+
+    for (const file of rows.results || []) {
+      if (!isProcurement(user) && file.access !== "shared" && file.owner_id !== user.id) continue;
+      const { owner_id, ...visibleFile } = file;
+      const messageFiles = filesByMessage.get(file.message_id) || [];
+      messageFiles.push(visibleFile);
+      filesByMessage.set(file.message_id, messageFiles);
+    }
+  }
+  return filesByMessage;
 }
 
-async function formatMessages(env, context, user) {
-  const where = isProcurement(user) ? "" : " AND m.visibility = 'visible'";
-  const rows = await env.DB.prepare(
+async function formatMessages(env, context, user, afterTimestamp = null) {
+  const visibilityFilter = isProcurement(user) ? "" : " AND m.visibility = 'visible'";
+  const cursorFilter = afterTimestamp === null ? "" : " AND m.created_at >= ?";
+  const statement = env.DB.prepare(
     `SELECT m.id, m.body, m.reply_to, m.visibility, m.mod_reason, m.created_at,
             u.id AS sender_id, u.name AS sender_name, u.role AS sender_role,
             pa.alias AS sender_alias, u.status AS sender_status
      FROM messages m
      JOIN users u ON u.id = m.sender_id
      LEFT JOIN participants pa ON pa.project_id = m.project_id AND pa.user_id = m.sender_id
-     WHERE m.topic_id = ? ${where}
+     WHERE m.topic_id = ? ${visibilityFilter}${cursorFilter}
      ORDER BY m.created_at ASC LIMIT 500`
-  ).bind(context.topic_id).all();
+  );
+  const rows = afterTimestamp === null
+    ? await statement.bind(context.topic_id).all()
+    : await statement.bind(context.topic_id, afterTimestamp).all();
 
+  const resultRows = rows.results || [];
+  const filesByMessage = await filesForMessages(env, resultRows.map((row) => row.id), user);
   const messages = [];
-  for (const row of rows.results || []) {
+  for (const row of resultRows) {
     const vendor = row.sender_role === "vendor";
     const message = {
       id: row.id,
@@ -282,7 +302,7 @@ async function formatMessages(env, context, user) {
       senderLabel: vendor ? (row.sender_alias || "Vendor") : row.sender_name,
       senderRole: vendor ? "vendor" : "procurement",
       isMine: row.sender_id === user.id,
-      files: await filesForMessage(env, row.id, user),
+      files: filesByMessage.get(row.id) || [],
     };
     if (isProcurement(user)) message.senderCompany = vendor ? row.sender_name : null;
     messages.push(message);
@@ -381,9 +401,7 @@ async function getSupportMessages(env, conversationId) {
 async function supportHistory(env, vendorId) {
   const result = await env.DB.prepare(
     "SELECT c.id, c.status, c.assigned_to, c.created_at, c.updated_at, c.last_message_at, " +
-    "a.name AS assigned_name, " +
-    "(SELECT body FROM support_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message, " +
-    "(SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = c.id) AS message_count " +
+    "a.name AS assigned_name, c.last_message_body AS last_message, c.message_count " +
     "FROM support_conversations c LEFT JOIN users a ON a.id = c.assigned_to " +
     "WHERE c.vendor_id = ? ORDER BY COALESCE(c.last_message_at, c.created_at) DESC LIMIT 20"
   ).bind(vendorId).all();
@@ -435,6 +453,7 @@ async function releaseStaleSupportAgents(env) {
     await supportBroadcast(env, "support:" + row.id, { type: "support_assignment", status: "waiting" });
     await supportBroadcast(env, "support_inbox", { type: "support_inbox_update", conversationId: row.id });
   }
+  return (stale.results || []).length;
 }
 
 async function dispatchWaitingSupport(env) {
@@ -803,13 +822,18 @@ async function routeApi(request, env) {
     const context = await getTopicContext(env, topicId);
     if (!(await canReadContext(context, user))) return error("Project ditutup atau akses tidak tersedia.", 403);
     const participant = user.role === "vendor" ? await joinProject(env, context.project_id, user) : null;
+    const afterParam = url.searchParams.get("after");
+    const afterTimestamp = afterParam === null ? null : Number(afterParam);
+    if (afterParam !== null && (afterParam.trim() === "" || !Number.isSafeInteger(afterTimestamp) || afterTimestamp < 0)) {
+      return error("Cursor pesan tidak valid.");
+    }
     return json({
       context: {
         topicId: context.topic_id, topicTitle: context.topic_title, topicStatus: context.topic_status,
         projectId: context.project_id, projectName: context.project_name, projectStatus: context.project_status,
         myAlias: participant?.alias || null,
       },
-      messages: await formatMessages(env, context, user),
+      messages: await formatMessages(env, context, user, afterTimestamp),
     });
   }
 
@@ -821,8 +845,8 @@ async function routeApi(request, env) {
     if (!context) return error("Topik tidak ditemukan.", 404);
     if (context.project_status !== "open") return error("Project Closed. Vendor tidak dapat mengirim pesan.", 403);
     if (user.role === "vendor" && context.topic_status !== "open") return error("Topik ditutup oleh Procurement.", 403);
-    if (user.role === "vendor") await joinProject(env, context.project_id, user);
-    else if (!isProcurement(user)) return error("Akses menulis tidak tersedia.", 403);
+    const participant = user.role === "vendor" ? await joinProject(env, context.project_id, user) : null;
+    if (user.role !== "vendor" && !isProcurement(user)) return error("Akses menulis tidak tersedia.", 403);
 
     const form = await request.formData();
     const body = String(form.get("body") || "").trim();
@@ -872,8 +896,21 @@ async function routeApi(request, env) {
     }
     await audit(env, user.id, "message_send", messageId, context.project_id);
     await broadcast(env, topicId, { type: "message", messageId });
-    const messages = await formatMessages(env, context, user);
-    return json({ message: messages[messages.length - 1] || null }, 201);
+    const vendor = user.role === "vendor";
+    const message = {
+      id: messageId,
+      body: body || "(lampiran)",
+      replyTo,
+      visibility: "visible",
+      modReason: null,
+      createdAt,
+      senderLabel: vendor ? (participant?.alias || "Vendor") : user.name,
+      senderRole: vendor ? "vendor" : "procurement",
+      isMine: true,
+      files: uploaded,
+    };
+    if (isProcurement(user)) message.senderCompany = null;
+    return json({ message }, 201);
   }
 
   const topicWsMatch = path.match(/^\/api\/topics\/([^/]+)\/ws$/);
@@ -1030,7 +1067,8 @@ async function routeApi(request, env) {
     const conversation = await getSupportConversation(env, conversationId);
     if (!conversation) return error("Percakapan Live Chat tidak ditemukan.", 404);
     if (!(isProcurement(user) || (user.role === "vendor" && conversation.vendor_id === user.id))) return error("Akses percakapan ditolak.", 403);
-    return json({ conversation, messages: await getSupportMessages(env, conversationId) });
+    const metadataOnly = url.searchParams.get("meta") === "1";
+    return json({ conversation, messages: metadataOnly ? [] : await getSupportMessages(env, conversationId) });
   }
 
   const supportMessagesMatch = path.match(/^\/api\/live-chat\/conversations\/([^/]+)\/messages$/);
@@ -1062,24 +1100,33 @@ async function routeApi(request, env) {
     ).bind(messageId, conversationId, user.id, senderRole, message, createdAt).run();
     if (senderRole === "procurement") {
       await env.DB.prepare(
-        "UPDATE support_conversations SET status = 'active', updated_at = ?, last_message_at = ?, first_agent_reply_at = COALESCE(first_agent_reply_at, ?) WHERE id = ?"
-      ).bind(createdAt, createdAt, createdAt, conversationId).run();
+        "UPDATE support_conversations SET status = 'active', updated_at = ?, last_message_at = ?, first_agent_reply_at = COALESCE(first_agent_reply_at, ?), message_count = message_count + 1, last_message_body = ? WHERE id = ?"
+      ).bind(createdAt, createdAt, createdAt, message, conversationId).run();
     } else {
       await env.DB.prepare(
-        "UPDATE support_conversations SET updated_at = ?, last_message_at = ? WHERE id = ?"
-      ).bind(createdAt, createdAt, conversationId).run();
+        "UPDATE support_conversations SET updated_at = ?, last_message_at = ?, message_count = message_count + 1, last_message_body = ? WHERE id = ?"
+      ).bind(createdAt, createdAt, message, conversationId).run();
     }
+    const messageRecord = {
+      id: messageId,
+      conversation_id: conversationId,
+      sender_id: user.id,
+      sender_role: senderRole,
+      body: message,
+      created_at: createdAt,
+      sender_name: user.name,
+    };
     await audit(env, user.id, "support_chat_message", messageId);
-    await supportBroadcast(env, "support:" + conversationId, { type: "support_message", messageId, senderRole });
-    await supportBroadcast(env, "support_inbox", { type: "support_inbox_update", conversationId });
-    return json({ message: { id: messageId, conversation_id: conversationId, sender_id: user.id, sender_role: senderRole, body: message, created_at: createdAt, sender_name: user.name } }, 201);
+    await supportBroadcast(env, "support:" + conversationId, { type: "support_message", messageId, senderRole, message: messageRecord });
+    await supportBroadcast(env, "support_inbox", { type: "support_inbox_update", conversationId, message: messageRecord });
+    return json({ message: messageRecord }, 201);
   }
 
   if (path === "/api/admin/live-chat/conversations" && method === "GET") {
     const user = await requireUser(request, env);
     if (!isProcurement(user)) return error("Hanya Procurement yang dapat melihat antrean Live Chat.", 403);
-    await releaseStaleSupportAgents(env);
-    await dispatchWaitingSupport(env);
+    const releasedStaleAgents = await releaseStaleSupportAgents(env);
+    if (releasedStaleAgents) await dispatchWaitingSupport(env);
     const wanted = url.searchParams.get("status") || "open";
     const valid = ["open", "waiting", "active", "closed", "all"];
     if (!valid.includes(wanted)) return error("Filter status tidak valid.");
@@ -1087,8 +1134,7 @@ async function routeApi(request, env) {
       wanted === "all" ? "1 = 1" : "c.status = ?";
     const query = "SELECT c.id, c.vendor_id, c.assigned_to, c.status, c.created_at, c.updated_at, c.last_message_at, c.first_agent_reply_at, " +
       "v.name AS vendor_name, v.username AS vendor_username, a.name AS assigned_name, " +
-      "(SELECT body FROM support_messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message, " +
-      "(SELECT COUNT(*) FROM support_messages m WHERE m.conversation_id = c.id) AS message_count " +
+      "c.last_message_body AS last_message, c.message_count " +
       "FROM support_conversations c JOIN users v ON v.id = c.vendor_id LEFT JOIN users a ON a.id = c.assigned_to " +
       "WHERE " + statusFilter + " ORDER BY CASE c.status WHEN 'waiting' THEN 0 WHEN 'active' THEN 1 ELSE 2 END, COALESCE(c.last_message_at, c.created_at) DESC";
     const result = wanted === "open" || wanted === "all"
@@ -1135,9 +1181,10 @@ async function routeApi(request, env) {
       for (const row of assigned.results || []) {
         await supportBroadcast(env, "support:" + row.id, { type: "support_assignment", status: "waiting" });
       }
+      await dispatchWaitingSupport(env);
     }
     if (statusChanged) await audit(env, user.id, "support_agent_status", user.id, null, status);
-    if (status === "online") {
+    if (status === "online" && statusChanged) {
       await releaseStaleSupportAgents(env);
       await dispatchWaitingSupport(env);
     }
@@ -1190,6 +1237,7 @@ async function routeApi(request, env) {
     await audit(env, user.id, "support_chat_transfer", conversationId, null, "Ditransfer ke " + target.name);
     await supportBroadcast(env, "support:" + conversationId, { type: "support_assignment", status: "active", agentId: target.id });
     await supportBroadcast(env, "support_inbox", { type: "support_inbox_update", conversationId });
+    await dispatchWaitingSupport(env);
     return json({ conversation: await getSupportConversation(env, conversationId) });
   }
 
@@ -1209,6 +1257,7 @@ async function routeApi(request, env) {
     await audit(env, user.id, "support_chat_close", conversationId);
     await supportBroadcast(env, "support:" + conversationId, { type: "support_closed" });
     await supportBroadcast(env, "support_inbox", { type: "support_inbox_update", conversationId });
+    await dispatchWaitingSupport(env);
     return json({ ok: true, status: "closed" });
   }
 
