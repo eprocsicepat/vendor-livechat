@@ -223,10 +223,17 @@ function renderMessages(keepBottom=true){
   box.innerHTML=messagesHTML();
   if(keepBottom||bottom)box.scrollTop=box.scrollHeight;
 }
-async function loadMessages(){
+async function loadMessages(afterTimestamp=null){
   if(!state.topic)return;
-  const data=await api(`/api/topics/${encodeURIComponent(state.topic.id)}/messages`);
-  state.context=data.context;state.messages=data.messages;
+  const cursor=afterTimestamp===null?"":`?after=${encodeURIComponent(afterTimestamp)}`;
+  const data=await api(`/api/topics/${encodeURIComponent(state.topic.id)}/messages${cursor}`);
+  state.context=data.context;
+  if(afterTimestamp===null)state.messages=data.messages;
+  else{
+    const known=new Set(state.messages.map(message=>message.id));
+    state.messages.push(...data.messages.filter(message=>!known.has(message.id)));
+    state.messages.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id));
+  }
   state.alias=data.context.myAlias||state.alias;
   if(state.project){state.project.status=data.context.projectStatus}
   if(state.topic){state.topic.status=data.context.topicStatus}
@@ -257,7 +264,12 @@ function connectSocket(topicId){
         toast("Project ditutup Procurement. Akses vendor ke histori dihentikan.","error");
         closeSocket();await loadProjects();await openProject(state.project.id,false);return;
       }
-      await loadMessages();
+      if(payload.type==="message"){
+        const latest=state.messages.reduce((max,message)=>Math.max(max,Number(message.createdAt)||0),0);
+        await loadMessages(latest||0);
+      }else{
+        await loadMessages();
+      }
       if(["topic_status","project_status"].includes(payload.type)){render();return}
       if(["message","moderation","file_published"].includes(payload.type)) {
         const target=payload.messageId?document.getElementById(`msg-${payload.messageId}`):null;
@@ -487,19 +499,34 @@ function connectVendorSupportSocket(conversationId) {
       supportState.unread = (supportState.unread || 0) + 1;
       toast("Pesan baru dari Procurement.");
     }
-    try {
-      const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId));
-      if (supportState.conversation?.id === conversationId) {
-        supportState.conversation = data.conversation;
-        supportState.messages = data.messages || [];
+    if(payload.type==="support_message" && payload.message){
+      const message=payload.message;
+      const appendUnique=(list,item)=>{
+        if(!list.some(existing=>existing.id===item.id))list.push(item);
+      };
+      if(supportState.conversation?.id===conversationId){
+        appendUnique(supportState.messages,message);
+        supportState.conversation.last_message_at=message.created_at;
+        supportState.conversation.message_count=(supportState.conversation.message_count||0)+1;
+        supportState.history=supportState.history.map(item=>item.id===conversationId?{
+          ...item,last_message:message.body,last_message_at:message.created_at,
+          message_count:(item.message_count||0)+1
+        }:item);
       }
-      if (supportState.viewingHistory === conversationId) {
-        supportState.viewedConversation = data.conversation;
-        supportState.viewedMessages = data.messages || [];
+      if(supportState.viewingHistory===conversationId){
+        appendUnique(supportState.viewedMessages,message);
+        if(supportState.viewedConversation)supportState.viewedConversation.last_message_at=message.created_at;
       }
-      supportState.history = await api("/api/live-chat/history").then(x => x.conversations || []);
       renderSupportWidget();
-    } catch (err) { console.error(err); }
+    }else{
+      try {
+        const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId) + "?meta=1");
+        if (supportState.conversation?.id === conversationId) supportState.conversation = data.conversation;
+        if (supportState.viewingHistory === conversationId) supportState.viewedConversation = data.conversation;
+        supportState.history = await api("/api/live-chat/history").then(x => x.conversations || []);
+        renderSupportWidget();
+      } catch (err) { console.error(err); }
+    }
   };
   ws.onclose = event => {
     if (supportState.socket !== ws) return;
@@ -570,7 +597,7 @@ async function connectSupportAdmin() {
     if (state.page === "livechat") loadSupportInbox().then(() => {
       if (state.supportSelected) return loadSupportConversation(state.supportSelected.id);
     }).then(() => render()).catch(err => console.error(err));
-  }, 12000);
+  }, 30000);
   if (!supportState.adminHeartbeat) supportState.adminHeartbeat = setInterval(() => {
     if (state.page === "livechat" && state.agentStatus !== "offline") {
       api("/api/admin/live-chat/availability", {method:"PATCH", body:{status:state.agentStatus}}).catch(err => console.error(err));
@@ -589,10 +616,25 @@ async function connectSupportAdmin() {
     try {
       const payload = JSON.parse(event.data);
       const had = state.supportInbox.some(c => c.id === payload.conversationId);
-      await loadSupportInbox();
-      if (state.supportSelected) await loadSupportConversation(state.supportSelected.id);
-      if (payload.conversationId && !had) toast("Chat baru masuk dari Vendor.");
-      render();
+      if(payload.message && payload.conversationId){
+        const message=payload.message;
+        const item=state.supportInbox.find(c=>c.id===payload.conversationId);
+        if(item){
+          item.last_message=message.body;
+          item.last_message_at=message.created_at;
+          item.message_count=(item.message_count||0)+1;
+        }
+        if(state.supportSelected?.id===payload.conversationId &&
+           !state.supportMessages.some(existing=>existing.id===message.id)){
+          state.supportMessages.push(message);
+        }
+        render();
+      }else{
+        await loadSupportInbox();
+        if(state.supportSelected)await loadSupportConversation(state.supportSelected.id);
+        if(payload.conversationId && !had)toast("Chat baru masuk dari Vendor.");
+        render();
+      }
     } catch (err) { console.error(err); }
   };
   ws.onclose = event => {
