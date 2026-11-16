@@ -549,10 +549,11 @@ async function loadSupportInbox() {
   if (current) state.agentStatus = current.status || "offline";
 }
 
-async function loadSupportConversation(conversationId) {
-  const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId));
+async function loadSupportConversation(conversationId, metadataOnly=false) {
+  const suffix=metadataOnly?"?meta=1":"";
+  const data = await api("/api/live-chat/conversations/" + encodeURIComponent(conversationId) + suffix);
   state.supportSelected = data.conversation;
-  state.supportMessages = data.messages || [];
+  if(!metadataOnly)state.supportMessages = data.messages || [];
   return data;
 }
 
@@ -595,7 +596,7 @@ async function connectSupportAdmin() {
   if (!isProc() || state.page !== "livechat") return;
   if (!supportState.adminPoll) supportState.adminPoll = setInterval(() => {
     if (state.page === "livechat") loadSupportInbox().then(() => {
-      if (state.supportSelected) return loadSupportConversation(state.supportSelected.id);
+      if (state.supportSelected) return loadSupportConversation(state.supportSelected.id,true);
     }).then(() => render()).catch(err => console.error(err));
   }, 30000);
   if (!supportState.adminHeartbeat) supportState.adminHeartbeat = setInterval(() => {
@@ -766,9 +767,14 @@ async function sendMessage(form){
   state.selectedFiles.forEach(file=>fd.append("files",file,file.name));
   const send=form.querySelector("button.send");send.disabled=true;send.textContent="…";
   try{
-    await api(`/api/topics/${encodeURIComponent(state.topic.id)}/messages`,{method:"POST",body:fd});
+    const result=await api(`/api/topics/${encodeURIComponent(state.topic.id)}/messages`,{method:"POST",body:fd});
+    if(result.message&&!state.messages.some(message=>message.id===result.message.id)){
+      state.messages.push(result.message);
+      state.messages.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id));
+      renderMessages();
+    }
     state.selectedFiles=[];state.replyTo=null;form.reset();
-    await loadMessages();$("#selected-files")?.replaceChildren();if($("#reply-bar"))$("#reply-bar").innerHTML="";
+    $("#selected-files")?.replaceChildren();if($("#reply-bar"))$("#reply-bar").innerHTML="";
   }catch(err){toast(err.message,"error")}
   finally{if(send){send.disabled=false;send.textContent="➤"}}
 }
