@@ -250,18 +250,22 @@ async function filesForMessages(env, messageIds, user) {
   const filesByMessage = new Map();
   if (!messageIds.length) return filesByMessage;
 
-  const placeholders = messageIds.map(() => "?").join(", ");
-  const rows = await env.DB.prepare(
-    `SELECT id, message_id, name, mime, size, access, owner_id, created_at
-     FROM files WHERE message_id IN (${placeholders}) ORDER BY created_at`
-  ).bind(...messageIds).all();
+  // Keep each IN clause comfortably below SQLite/D1 bind-parameter limits.
+  for (let offset = 0; offset < messageIds.length; offset += 90) {
+    const chunk = messageIds.slice(offset, offset + 90);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await env.DB.prepare(
+      `SELECT id, message_id, name, mime, size, access, owner_id, created_at
+       FROM files WHERE message_id IN (${placeholders}) ORDER BY created_at`
+    ).bind(...chunk).all();
 
-  for (const file of rows.results || []) {
-    if (!isProcurement(user) && file.access !== "shared" && file.owner_id !== user.id) continue;
-    const { owner_id, ...visibleFile } = file;
-    const messageFiles = filesByMessage.get(file.message_id) || [];
-    messageFiles.push(visibleFile);
-    filesByMessage.set(file.message_id, messageFiles);
+    for (const file of rows.results || []) {
+      if (!isProcurement(user) && file.access !== "shared" && file.owner_id !== user.id) continue;
+      const { owner_id, ...visibleFile } = file;
+      const messageFiles = filesByMessage.get(file.message_id) || [];
+      messageFiles.push(visibleFile);
+      filesByMessage.set(file.message_id, messageFiles);
+    }
   }
   return filesByMessage;
 }
